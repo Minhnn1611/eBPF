@@ -17,6 +17,7 @@ struct event {
     __u32 pid;
     __u32 tid;
     __u32 uid;
+    __u64 cgroup_id;  
     char comm[COMM_LEN];
     int fd;
     int count;

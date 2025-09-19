@@ -29,4 +29,4 @@ filemon: $(USER_SRC) $(SKEL_HDR) $(COMMON_HDR)
 		$(INCLUDES) $(LIBBPF_A) -lelf -lz
 
 clean:
-	rm -f filemon $(BPF_OBJ) $(SKEL_HDR)
+	rm -f filemon $(BPF_OBJ) $(SKEL_HDR) ./log/file_log.json
