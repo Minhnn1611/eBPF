@@ -33,7 +33,7 @@ static void sig_handler(int signo) {
     exiting = 1;
 }
 
-const char *lookup_container_id(pid_t pid) {
+const char *lookup_container_id(pid_t pid, bool *is_docker) {
     static char container_id[128];
     char path[64];
     snprintf(path, sizeof(path), "/proc/%d/cgroup", pid);
@@ -41,29 +41,34 @@ const char *lookup_container_id(pid_t pid) {
     FILE *f = fopen(path, "r");
     if (!f) return NULL;
 
-    char line[256];
+    char line[512];
     container_id[0] = '\0';
+    int docker_count = 0;
 
     while (fgets(line, sizeof(line), f)) {
-        char *p = strstr(line, "docker-");
-        if (p) {
+        char *p = line;
+        while ((p = strstr(p, "docker-")) != NULL) {
             char *end = strstr(p, ".scope");
             if (end) {
                 size_t len = end - (p + 7); // 7 = strlen("docker-")
-                if (len >= sizeof(container_id)) len = sizeof(container_id)-1;
-                strncpy(container_id, p+7, len);
+                if (len >= sizeof(container_id)) len = sizeof(container_id) - 1;
+                strncpy(container_id, p + 7, len);
                 container_id[len] = '\0';
-                fclose(f);
-                return container_id;
+                docker_count++;
             }
+            p += 7;
         }
     }
 
     fclose(f);
-    return NULL;
+
+    if (is_docker)
+        *is_docker = (docker_count == 1); // If only one "docker-" found, it's a Docker container
+
+    return container_id[0] ? container_id : NULL;
 }
 
-// Get container name from container id
+// Get docker container name from container id
 const char *lookup_container_name(const char *container_id) {
     static char name[128];
     char cmd[256];
@@ -86,7 +91,7 @@ const char *lookup_container_name(const char *container_id) {
     return NULL;
 }
 
-// Get container image from container id
+// Get docker container image from container id
 const char *lookup_container_image(const char *container_id) {
     static char image[128];
     char cmd[256];
@@ -106,28 +111,75 @@ const char *lookup_container_image(const char *container_id) {
     return NULL;
 }
 
+// Get container name and image from container id (for k8s)
+int lookup_container_info(const char *container_id, char *name, size_t name_sz,
+                          char *image, size_t image_sz) {
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd),
+    "bash -c \"/snap/bin/kubectl --kubeconfig=/home/minhnn/.kube/config "
+    "get pods -A "
+    "-o jsonpath=\\\"{range .items[*]}{range .status.containerStatuses[*]}"
+    "{.name}{'\\t'}{.image}{'\\t'}{.containerID}{'\\n'}{end}{end}\\\" "
+    "| grep %s\"",
+    container_id);
+
+    FILE *fp = popen(cmd, "r");
+    if (!fp) return -1;
+
+    char line[512];
+    if (fgets(line, sizeof(line), fp)) {
+        line[strcspn(line, "\n")] = 0;
+
+        // Format: <container_name>\t<image>\t<containerID>
+        char *tok_name  = strtok(line, "\t");
+        char *tok_image = strtok(NULL, "\t");
+        // char *tok_id    = strtok(NULL, "\t");
+
+        if (tok_name)  strncpy(name, tok_name, name_sz);
+        if (tok_image) strncpy(image, tok_image, image_sz);
+
+        pclose(fp);
+        return 0;
+    }
+
+    pclose(fp);
+    return -1;
+}
+
 const struct container_cache* get_container_info(pid_t pid, unsigned long long cgroup_id) {
-    // Get container info from cache
+    // Check cache first
     for (int i = 0; i < cache_count; i++) {
         if (cache[i].cgroup_id == cgroup_id) {
             return &cache[i];
         }
     }
 
-    // If not in cache, look container id
-    const char *container_id = lookup_container_id(pid);
+    bool is_docker = false;
+    const char *container_id = lookup_container_id(pid, &is_docker);
     if (!container_id || container_id[0] == '\0')
         return NULL;
 
     struct container_cache *c = &cache[cache_count++];
     c->cgroup_id = cgroup_id;
     strncpy(c->id, container_id, sizeof(c->id));
+    c->id[sizeof(c->id)-1] = '\0';
 
-    const char *name  = lookup_container_name(container_id);
-    const char *image = lookup_container_image(container_id);
-
-    if (name)  strncpy(c->name, name, sizeof(c->name));
-    if (image) strncpy(c->image, image, sizeof(c->image));
+    if (is_docker) {
+        // If Docker container, get name and image using docker command
+        const char *name  = lookup_container_name(container_id);
+        const char *image = lookup_container_image(container_id);
+        if (name)  strncpy(c->name, name, sizeof(c->name));
+        else       c->name[0] = '\0';
+        if (image) strncpy(c->image, image, sizeof(c->image));
+        else       c->image[0] = '\0';
+    } else {
+        // If k8s container, get name and image using kubectl command
+        if (lookup_container_info(container_id, c->name, sizeof(c->name),
+                                  c->image, sizeof(c->image)) < 0) {
+            c->name[0] = '\0';
+            c->image[0] = '\0';
+        }
+    }
 
     return c;
 }
