@@ -11,7 +11,7 @@ INC_DIR    := ./inc
 BPF_OBJ    := $(OBJ_DIR)/filemon.bpf.o
 SKEL_HDR   := $(INC_DIR)/filemon.skel.h
 COMMON_HDR := $(INC_DIR)/filemon_common.h
-USER_SRC   := $(SRC_DIR)/filemon.c
+USER_SRC   := $(SRC_DIR)/filemon.c $(SRC_DIR)/container_lookup.c
 BPF_SRC    := $(SRC_DIR)/filemon.bpf.c
 
 all: filemon
@@ -26,7 +26,7 @@ $(SKEL_HDR): $(BPF_OBJ)
 
 filemon: $(USER_SRC) $(SKEL_HDR) $(COMMON_HDR)
 	gcc -O2 -g -Wall $(USER_SRC) -o $@ \
-		$(INCLUDES) $(LIBBPF_A) -lelf -lz
+		$(INCLUDES) $(LIBBPF_A) -lelf -lz -lcjson -lcurl
 
 clean:
 	rm -f filemon $(BPF_OBJ) $(SKEL_HDR) ./log/file_log.json
